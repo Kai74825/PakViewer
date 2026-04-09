@@ -211,6 +211,19 @@ jobs:
       with:
         dotnet-version: ${{ env.DOTNET_VERSION }}
 
+    - name: Import Code Signing Certificate
+      env:
+        CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+        CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      run: |
+        echo "$CERTIFICATE_P12" | base64 --decode > certificate.p12
+        security create-keychain -p actions build.keychain
+        security default-keychain -s build.keychain
+        security unlock-keychain -p actions build.keychain
+        security import certificate.p12 -k build.keychain -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain
+        rm certificate.p12
+
     - name: Restore dependencies
       run: |
         dotnet restore PakViewer.csproj -r osx-x64
@@ -234,6 +247,12 @@ jobs:
         mkdir -p universal
         cp -R "publish-arm64/$APP_NAME" "$UNIVERSAL_APP"
 
+        # 修正 Info.plist 的 Bundle Identifier
+        PLIST="$UNIVERSAL_APP/Contents/Info.plist"
+        /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.tonyq.pakviewer" "$PLIST"
+        /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.get_version.outputs.VERSION }}" "$PLIST"
+        /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ steps.get_version.outputs.DOTNET_VERSION }}" "$PLIST"
+
         # 使用 lipo 合併所有 Mach-O 檔案 (執行檔和 dylib)
         MACOS_DIR="$UNIVERSAL_APP/Contents/MacOS"
         for file in "$MACOS_DIR"/*; do
@@ -246,11 +265,51 @@ jobs:
           fi
         done
 
-        # Ad-hoc 簽署
-        codesign --force --deep --sign - "$UNIVERSAL_APP"
+        # 移除 .NET publish 產生的巢狀 app bundle
+        rm -rf "$MACOS_DIR/$APP_NAME"
+
+        # Developer ID 簽署 + hardened runtime + entitlements
+        IDENTITY="TonyQ CO., LTD. (8JVDJGLLYR)"
+        ENTITLEMENTS="PakViewer.entitlements"
+        # 簽署 MacOS 目錄下所有檔案 (DLL, dylib, xml, json 等都需要簽署)
+        for file in "$MACOS_DIR"/*; do
+          if [ -f "$file" ] && [ ! -L "$file" ]; then
+            filename=$(basename "$file")
+            if [ "$filename" = "${{ env.PROJECT_NAME }}" ]; then
+              continue  # 主程式最後簽
+            fi
+            if file "$file" | grep -q "Mach-O"; then
+              codesign --force --options runtime --sign "$IDENTITY" --entitlements "$ENTITLEMENTS" "$file"
+            else
+              codesign --force --sign "$IDENTITY" "$file"
+            fi
+          fi
+        done
+        # 簽署主程式 (最後簽署 app bundle)
+        codesign --force --options runtime --sign "$IDENTITY" --entitlements "$ENTITLEMENTS" "$UNIVERSAL_APP"
+
+        # 驗證簽署
+        codesign --verify --deep --strict "$UNIVERSAL_APP"
+        echo "Code signing verification passed."
 
         # 建立 DMG
         hdiutil create -volname "${{ env.PROJECT_NAME }}" -srcfolder "$UNIVERSAL_APP" -ov -format UDZO "${{ env.PROJECT_NAME }}-${{ steps.get_version.outputs.TAG }}-osx-universal.dmg"
+
+    - name: Notarize DMG
+      env:
+        APPLE_ID: ${{ secrets.APPLE_ID }}
+        APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      run: |
+        DMG_FILE="${{ env.PROJECT_NAME }}-${{ steps.get_version.outputs.TAG }}-osx-universal.dmg"
+        echo "Submitting $DMG_FILE for notarization..."
+        xcrun notarytool submit "$DMG_FILE" \
+          --apple-id "$APPLE_ID" \
+          --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+          --team-id "$APPLE_TEAM_ID" \
+          --wait --timeout 30m
+        echo "Stapling notarization ticket..."
+        xcrun stapler staple "$DMG_FILE"
 
     - name: Upload universal artifact
       uses: actions/upload-artifact@v4
@@ -331,11 +390,7 @@ jobs:
           **macOS**:
           1. 下載 DMG 檔案並雙擊掛載
           2. 將 PakViewer.app 拖曳到應用程式資料夾
-          3. 首次開啟時，右鍵點擊 app → 選擇「打開」
-          4. 如果還是無法開啟，在終端機執行：
-          ```bash
-          xattr -cr /Applications/PakViewer.app
-          ```
+          3. 雙擊即可開啟（已完成 Apple 公證）
 
           **Linux**:
           ```bash
