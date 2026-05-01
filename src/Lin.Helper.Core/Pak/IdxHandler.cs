@@ -47,6 +47,7 @@ namespace Lin.Helper.Core.Pak
             new ExtBHandler(),
             new ExtHandler(),
             new IdxV2Handler(),
+            new RmsHandler(),
             new OldL1Handler(),
             new OldDesHandler(),
         };
@@ -440,6 +441,103 @@ namespace Lin.Helper.Core.Pak
             }
             return records;
         }
+    }
+
+    // ================================================================
+    //  RmsHandler — _RMS magic, 276-byte entries (Lineage Remastered)
+    //
+    //  Header (8 bytes):
+    //    [0..3] "_RMS"
+    //    [4..7] int32 entry count
+    //  Entry (276 bytes):
+    //    [0..3]    int32   PAK offset
+    //    [4..7]    int32   uncompressed size
+    //    [8..11]   int32   stored / compressed size (flag=0 時為 0)
+    //    [12..15]  int32   compression flag (0 = none, 2 = brotli)
+    //    [16..275] char[260] filename, NUL-padded (支援子目錄)
+    // ================================================================
+    internal sealed class RmsHandler : IdxHandler
+    {
+        private const int HeaderSize = 8;
+        private const int EntrySize = 276;
+        private const int NameOffset = 16;
+        private const int NameLength = 260;
+
+        public override bool CanHandle(byte[] data)
+        {
+            return data.Length >= HeaderSize
+                && data[0] == '_' && data[1] == 'R' && data[2] == 'M' && data[3] == 'S';
+        }
+
+        public override IdxHandler CreateInstance() => new RmsHandler();
+
+        public override IdxParseResult TryParse(byte[] idxData)
+        {
+            try
+            {
+                int count = BitConverter.ToInt32(idxData, 4);
+                if (count < 0 || count > 1_000_000) return null;
+
+                int expectedSize = HeaderSize + count * EntrySize;
+                if (idxData.Length != expectedSize) return null;
+
+                var records = new List<IndexRecord>(count);
+                for (int i = 0; i < count; i++)
+                {
+                    int pos = HeaderSize + i * EntrySize;
+                    long offset = BitConverter.ToUInt32(idxData, pos);
+                    int size = BitConverter.ToInt32(idxData, pos + 4);
+                    int compressedSize = BitConverter.ToInt32(idxData, pos + 8);
+                    int flags = BitConverter.ToInt32(idxData, pos + 12);
+
+                    int nameStart = pos + NameOffset;
+                    int nameEnd = Array.IndexOf(idxData, (byte)0, nameStart, NameLength);
+                    int nameLen = (nameEnd >= 0) ? nameEnd - nameStart : NameLength;
+                    string fileName = Encoding.Default.GetString(idxData, nameStart, nameLen);
+
+                    records.Add(new IndexRecord(fileName, size, offset)
+                    {
+                        CompressedSize = compressedSize,
+                        Flags = flags
+                    });
+                }
+
+                return new IdxParseResult
+                {
+                    Records = records,
+                    IsProtected = false,
+                    EncryptionType = "RMS"
+                };
+            }
+            catch { return null; }
+        }
+
+        public override byte[] ExtractEntry(FileStream pakStream, IndexRecord rec)
+        {
+            // flag=2: brotli 壓縮 (raw,無額外加密) — 讀 CompressedSize 後 brotli 解壓
+            // flag=0: 原始 bytes (PNG 等二進位檔可直讀;.xml 等 client 內為自訂序列化格式,
+            //         非 L1 PakTools 加密,需另行解碼,此處先回傳原始 bytes)
+            if (rec.Flags == 2 && rec.CompressedSize > 0)
+            {
+                byte[] compressed = new byte[rec.CompressedSize];
+                pakStream.Seek(rec.Offset, SeekOrigin.Begin);
+                pakStream.ReadExactly(compressed, 0, rec.CompressedSize);
+                return DecompressBrotli(compressed);
+            }
+
+            byte[] data = new byte[rec.FileSize];
+            pakStream.Seek(rec.Offset, SeekOrigin.Begin);
+            pakStream.ReadExactly(data, 0, rec.FileSize);
+            return data;
+        }
+
+        public override int GetRawSize(IndexRecord rec)
+        {
+            return (rec.Flags == 2 && rec.CompressedSize > 0)
+                ? rec.CompressedSize : rec.FileSize;
+        }
+
+        public override int MaxFileNameBytes => NameLength - 1;
     }
 
     // ================================================================
