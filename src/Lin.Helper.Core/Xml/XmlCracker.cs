@@ -65,6 +65,11 @@ namespace Lin.Helper.Core.Xml
                 // Parse failed, use fallback
             }
 
+            // 已是 XML (data[0] == '<') 但沒宣告 encoding：依 W3C XML spec 預設 UTF-8，
+            // 不再用 -c./-k./-j. 檔名後綴推測 (R260 後完全捨棄該慣例)。
+            if (data[0] == 0x3C)
+                return Encoding.UTF8;
+
             return GetFallbackEncoding(fallbackByFileName);
         }
 
