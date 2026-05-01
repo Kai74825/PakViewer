@@ -577,6 +577,11 @@ namespace PakViewer.Viewers
             if (data.Length >= 2 && data[0] == 0xFF && data[1] == 0xFE)
                 return Encoding.Unicode;
 
+            // 內容開頭是 '<' 一律當 XML 處理：用 XML 自宣告 encoding，沒宣告則 UTF-8。
+            // R260 把 .uml/.plist/.ui/.csd/.bak 全當 XML 用且大量 UTF-8，不能再用檔名後綴猜。
+            if (data.Length > 0 && data[0] == 0x3C)
+                return XmlCracker.GetXmlEncoding(data, fileName);
+
             // JSON files are always UTF-8 per RFC 8259
             var ext = Path.GetExtension(fileName)?.ToLower();
             if (ext == ".json")

@@ -1479,7 +1479,18 @@ namespace PakViewer
 
         private static Encoding DetectEncoding(byte[] data, string fileName)
         {
-            // Register code pages if not already done
+            // Check BOM first (highest priority)
+            if (data.Length >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF)
+                return Encoding.UTF8;
+            if (data.Length >= 2 && data[0] == 0xFF && data[1] == 0xFE)
+                return Encoding.Unicode;
+
+            // 內容開頭是 '<' 一律當 XML 處理：用 XML 自宣告 encoding，沒宣告則 UTF-8。
+            // R260 把 .uml/.plist/.ui/.csd/.bak 全當 XML 用且大量 UTF-8，不能再用檔名後綴猜。
+            if (data.Length > 0 && data[0] == 0x3C)
+                return Lin.Helper.Core.Xml.XmlCracker.GetXmlEncoding(data, fileName);
+
+            // Check filename for language hint (classic Lineage files)
             var lowerName = fileName?.ToLower() ?? "";
             if (lowerName.Contains("-c") || lowerName.Contains("_c"))
                 return Encoding.GetEncoding("big5");
@@ -1489,12 +1500,6 @@ namespace PakViewer
                 return Encoding.GetEncoding("euc-kr");
             if (lowerName.Contains("-h") || lowerName.Contains("_h"))
                 return Encoding.GetEncoding("gb2312");
-
-            // Check BOM
-            if (data.Length >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF)
-                return Encoding.UTF8;
-            if (data.Length >= 2 && data[0] == 0xFF && data[1] == 0xFE)
-                return Encoding.Unicode;
 
             // Default to Big5 for Lineage files
             return Encoding.GetEncoding("big5");
