@@ -1311,6 +1311,8 @@ namespace PakViewer
 
                     var data = part.SourcePak.Extract(part.FileIndex);
                     var outputPath = Path.Combine(exportPath, part.FileName);
+                    var dir = Path.GetDirectoryName(outputPath);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
                     File.WriteAllBytes(outputPath, data);
                     exportedCount++;
                 }
@@ -3929,6 +3931,8 @@ namespace PakViewer
                     var outputPath = Path.Combine(outputFolder, item.FileName);
 
                     // 寫出原始檔案 (加密 XML 保留原始狀態)
+                    var dir = Path.GetDirectoryName(outputPath);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
                     File.WriteAllBytes(outputPath, data);
                     exported++;
 
