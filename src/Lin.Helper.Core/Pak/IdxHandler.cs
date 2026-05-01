@@ -537,6 +537,45 @@ namespace Lin.Helper.Core.Pak
                 ? rec.CompressedSize : rec.FileSize;
         }
 
+        public override bool CanWrite => true;
+
+        /// <summary>
+        /// 新增 / 替換 entry 時的編碼。沿用其他 handler 的語意 — 一律以 flag=0 raw 形式
+        /// 寫回 (PakFile.SaveChanges 在 line 477 用 `new IndexRecord(name, size, offset)`
+        /// 建構新 record,沒有帶 Flags / CompressedSize 過來,所以無法重新 brotli 壓)。
+        /// 已存在但未修改的 entry 會走 PakFile 的 "保留" 路徑,brotli 內容跟 metadata 完整保留。
+        /// </summary>
+        public override byte[] EncodeEntry(byte[] rawData) => rawData;
+
+        public override byte[] BuildIndex(List<IndexRecord> records)
+        {
+            byte[] result = new byte[HeaderSize + records.Count * EntrySize];
+
+            // Header
+            result[0] = (byte)'_'; result[1] = (byte)'R';
+            result[2] = (byte)'M'; result[3] = (byte)'S';
+            BitConverter.GetBytes(records.Count).CopyTo(result, 4);
+
+            // Entries
+            for (int i = 0; i < records.Count; i++)
+            {
+                var rec = records[i];
+                int pos = HeaderSize + i * EntrySize;
+
+                BitConverter.GetBytes((uint)rec.Offset).CopyTo(result, pos);
+                BitConverter.GetBytes(rec.FileSize).CopyTo(result, pos + 4);
+                BitConverter.GetBytes(rec.CompressedSize).CopyTo(result, pos + 8);
+                BitConverter.GetBytes(rec.Flags).CopyTo(result, pos + 12);
+
+                byte[] nameBytes = Encoding.Default.GetBytes(rec.FileName ?? "");
+                int nameLen = Math.Min(nameBytes.Length, NameLength - 1);
+                Array.Copy(nameBytes, 0, result, pos + NameOffset, nameLen);
+                // 後面已經是 0 (new byte[] 預設)
+            }
+
+            return result;
+        }
+
         public override int MaxFileNameBytes => NameLength - 1;
     }
 
