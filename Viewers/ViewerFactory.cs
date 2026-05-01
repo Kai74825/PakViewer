@@ -14,6 +14,7 @@ namespace PakViewer.Viewers
             () => new SpriteViewer(),
             () => new TilViewer(),       // TIL 地圖圖塊
             () => new L1ImageViewer(),   // Lineage 特有格式 (.tbt, .img)
+            () => new DdsViewer(),       // DDS 紋理 (BC1/BC3/BC7)
             () => new ImageViewer(),     // 標準圖片格式
             () => new TextViewer(),
         };
