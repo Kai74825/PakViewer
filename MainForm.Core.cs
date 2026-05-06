@@ -1338,6 +1338,7 @@ namespace PakViewer
 
             // 使用 ViewerFactory 建立新的 viewer
             _currentViewer = Viewers.ViewerFactory.CreateViewerSmart(ext, data, fileName);
+            _currentViewer.EncryptionType = _currentViewerPak?.EncryptionType;
             _currentViewer.LoadData(data, fileName);
 
             // 訂閱儲存事件
@@ -1486,11 +1487,6 @@ namespace PakViewer
                 return Encoding.UTF8;
             if (data.Length >= 2 && data[0] == 0xFF && data[1] == 0xFE)
                 return Encoding.Unicode;
-
-            // 內容開頭是 '<' 一律當 XML 處理：用 XML 自宣告 encoding，沒宣告則 UTF-8。
-            // R260 把 .uml/.plist/.ui/.csd/.bak 全當 XML 用且大量 UTF-8，不能再用檔名後綴猜。
-            if (data.Length > 0 && data[0] == 0x3C)
-                return Lin.Helper.Core.Xml.XmlCracker.GetXmlEncoding(data, fileName);
 
             // Check filename for language hint (classic Lineage files)
             var lowerName = fileName?.ToLower() ?? "";
@@ -1924,7 +1920,7 @@ namespace PakViewer
                 {
                     var data = pak.Extract(selected.Index);
                     var ext = Path.GetExtension(selected.FileName).ToLowerInvariant();
-                    var content = CreateTabContent(ext, data, selected.FileName);
+                    var content = CreateTabContent(ext, data, selected.FileName, pak.EncryptionType);
                     if (content == null) return;
 
                     var tabKey = $"{idxPath}:{selected.Index}";
@@ -2604,7 +2600,7 @@ namespace PakViewer
                 {
                     var data = provider.Extract(fileItem.Index);
                     var ext = Path.GetExtension(fileItem.FileName).ToLowerInvariant();
-                    var content = CreateTabContent(ext, data, fileItem.FileName);
+                    var content = CreateTabContent(ext, data, fileItem.FileName, fileItem.SourcePak?.EncryptionType);
                     if (content == null) return;
 
                     var tabKey = $"{provider.Name}:{fileItem.Index}";
@@ -2652,6 +2648,7 @@ namespace PakViewer
 
                     // 使用 ViewerFactory 建立適合的 viewer
                     currentViewer = Viewers.ViewerFactory.CreateViewerSmart(ext, data, selected.FileName);
+                    currentViewer.EncryptionType = selected.SourcePak?.EncryptionType;
                     currentViewer.LoadData(data, selected.FileName);
 
                     // 訂閱儲存事件
@@ -2704,7 +2701,7 @@ namespace PakViewer
                 {
                     var data = provider.Extract(selected.Index);
                     var ext = Path.GetExtension(selected.FileName).ToLowerInvariant();
-                    var content = CreateTabContent(ext, data, selected.FileName);
+                    var content = CreateTabContent(ext, data, selected.FileName, selected.SourcePak?.EncryptionType);
                     if (content == null) return;
 
                     var tabKey = $"{provider.Name}:{selected.Index}";
@@ -4401,7 +4398,7 @@ namespace PakViewer
                 var ext = Path.GetExtension(item.FileName).ToLowerInvariant();
 
                 // Create tab content based on file type
-                Control content = CreateTabContent(ext, data, item.FileName);
+                Control content = CreateTabContent(ext, data, item.FileName, pak.EncryptionType);
                 if (content == null) return;
 
                 // Create tab page
@@ -4424,10 +4421,11 @@ namespace PakViewer
             }
         }
 
-        private Control CreateTabContent(string ext, byte[] data, string fileName)
+        private Control CreateTabContent(string ext, byte[] data, string fileName, string encryptionType = null)
         {
             // 使用模組化的 ViewerFactory
             var viewer = Viewers.ViewerFactory.CreateViewerSmart(ext, data, fileName);
+            viewer.EncryptionType = encryptionType;
             viewer.LoadData(data, fileName);
 
             // 如果 viewer 支援搜尋，加上搜尋工具列

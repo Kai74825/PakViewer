@@ -28,7 +28,10 @@ namespace Lin.Helper.Core.Xml
         /// <summary>
         /// 從 XML 資料中解析 encoding 聲明，回傳對應的 Encoding
         /// </summary>
-        public static Encoding GetXmlEncoding(byte[] data, string fallbackByFileName = null)
+        /// <param name="data">XML 資料 (已解密)</param>
+        /// <param name="fallbackByFileName">沒宣告 encoding 時依檔名後綴 fallback</param>
+        /// <param name="defaultUtf8">沒宣告 encoding 且資料是 XML 開頭時是否預設 UTF-8 (R260 / _RMS 慣例;legacy 應 false)</param>
+        public static Encoding GetXmlEncoding(byte[] data, string fallbackByFileName = null, bool defaultUtf8 = false)
         {
             if (data == null || data.Length < 10)
                 return GetFallbackEncoding(fallbackByFileName);
@@ -65,9 +68,10 @@ namespace Lin.Helper.Core.Xml
                 // Parse failed, use fallback
             }
 
-            // 已是 XML (data[0] == '<') 但沒宣告 encoding：依 W3C XML spec 預設 UTF-8，
-            // 不再用 -c./-k./-j. 檔名後綴推測 (R260 後完全捨棄該慣例)。
-            if (data[0] == 0x3C)
+            // 已是 XML (data[0] == '<') 但沒宣告 encoding:
+            // - defaultUtf8 = true (來源是 _RMS / R260): 依 W3C XML spec 預設 UTF-8
+            // - defaultUtf8 = false (legacy): 走檔名後綴 fallback,避免舊版 BIG5 XML 被誤判
+            if (defaultUtf8 && data[0] == 0x3C)
                 return Encoding.UTF8;
 
             return GetFallbackEncoding(fallbackByFileName);

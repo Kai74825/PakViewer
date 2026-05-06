@@ -71,10 +71,11 @@ namespace PakViewer.Viewers
 
             _context.DisplayData = displayData;
 
-            // 取得 encoding
+            // 取得 encoding (RMS 來源走 R260 慣例,UTF-8 預設;legacy 來源維持 BIG5 預設)
+            bool isRmsSource = EncryptionType == "RMS";
             var encoding = _context.IsXmlEncrypted
-                ? XmlCracker.GetXmlEncoding(displayData, fileName)
-                : DetectEncoding(displayData, fileName);
+                ? XmlCracker.GetXmlEncoding(displayData, fileName, defaultUtf8: isRmsSource)
+                : DetectEncoding(displayData, fileName, isRmsSource);
             _context.FileEncoding = encoding;
 
             _fullText = encoding.GetString(displayData);
@@ -566,7 +567,7 @@ namespace PakViewer.Viewers
             _searchResultLabel.Text = $"{currentMatch}/{count}";
         }
 
-        private static Encoding DetectEncoding(byte[] data, string fileName)
+        private static Encoding DetectEncoding(byte[] data, string fileName, bool isRmsSource = false)
         {
             // Register code pages if not already done
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
@@ -577,13 +578,16 @@ namespace PakViewer.Viewers
             if (data.Length >= 2 && data[0] == 0xFF && data[1] == 0xFE)
                 return Encoding.Unicode;
 
-            // 內容開頭是 '<' 一律當 XML 處理：用 XML 自宣告 encoding，沒宣告則 UTF-8。
-            // R260 把 .uml/.plist/.ui/.csd/.bak 全當 XML 用且大量 UTF-8，不能再用檔名後綴猜。
-            if (data.Length > 0 && data[0] == 0x3C)
-                return XmlCracker.GetXmlEncoding(data, fileName);
+            var ext = Path.GetExtension(fileName)?.ToLower();
+
+            // XML 編碼偵測時機:
+            // - .xml 副檔名: 一律解析宣告 encoding
+            // - _RMS 來源 + 內容開頭是 '<': R260 .uml/.plist/.ui/.csd/.bak 等實際是 XML 但副檔名不是 .xml
+            // - Legacy 來源即使內容開頭是 '<' 也不走此路徑 (避免舊版 BIG5 .txt 含 <note>/<tour> 等描述檔被誤判)
+            if (ext == ".xml" || (isRmsSource && data.Length > 0 && data[0] == 0x3C))
+                return XmlCracker.GetXmlEncoding(data, fileName, defaultUtf8: isRmsSource);
 
             // JSON files are always UTF-8 per RFC 8259
-            var ext = Path.GetExtension(fileName)?.ToLower();
             if (ext == ".json")
                 return Encoding.UTF8;
 
@@ -598,8 +602,8 @@ namespace PakViewer.Viewers
             if (lowerName.Contains("-h") || lowerName.Contains("_h"))
                 return Encoding.GetEncoding("gb2312");
 
-            // Default to Big5 for Lineage files
-            return Encoding.GetEncoding("big5");
+            // _RMS 預設 UTF-8 (R260 全面 UTF-8); legacy 預設 BIG5
+            return isRmsSource ? Encoding.UTF8 : Encoding.GetEncoding("big5");
         }
 
         /// <summary>
@@ -618,9 +622,10 @@ namespace PakViewer.Viewers
                 displayData = XmlCracker.Decrypt((byte[])data.Clone());
             }
 
+            bool isRmsSource = EncryptionType == "RMS";
             var encoding = IsXmlFile(fileName) && XmlCracker.IsEncrypted(data)
-                ? XmlCracker.GetXmlEncoding(displayData, fileName)
-                : DetectEncoding(displayData, fileName);
+                ? XmlCracker.GetXmlEncoding(displayData, fileName, defaultUtf8: isRmsSource)
+                : DetectEncoding(displayData, fileName, isRmsSource);
 
             return encoding.GetString(displayData);
         }

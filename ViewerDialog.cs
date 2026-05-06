@@ -159,6 +159,7 @@ namespace PakViewer
 
                 // 建立新 viewer
                 _currentViewer = ViewerFactory.CreateViewerSmart(ext, data, item.FileName);
+                _currentViewer.EncryptionType = _pak?.EncryptionType;
                 _currentViewer.LoadData(data, item.FileName);
 
                 // 顯示 viewer

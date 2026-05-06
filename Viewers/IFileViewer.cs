@@ -70,6 +70,12 @@ namespace PakViewer.Viewers
         string[] SupportedExtensions { get; }
 
         /// <summary>
+        /// 來源 PakFile 的 EncryptionType (e.g. "RMS"、"L1"、"Ext"、"None")。
+        /// 由 caller 在 LoadData 之前設定,viewer 用來決定 R260 / legacy 行為差異 (例如預設編碼)。
+        /// </summary>
+        string EncryptionType { get; set; }
+
+        /// <summary>
         /// 載入檔案資料
         /// </summary>
         /// <param name="data">檔案二進制資料</param>

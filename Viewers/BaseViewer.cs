@@ -21,6 +21,11 @@ namespace PakViewer.Viewers
         /// </summary>
         public FileContext Context => _context;
 
+        /// <summary>
+        /// 來源 PakFile 的 EncryptionType (RMS / L1 / Ext / None 等),由 caller 在 LoadData 前設定。
+        /// </summary>
+        public virtual string EncryptionType { get; set; }
+
         protected void OnSaveRequested(byte[] data)
         {
             SaveRequested?.Invoke(this, new SaveRequestedEventArgs(data));
