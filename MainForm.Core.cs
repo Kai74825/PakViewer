@@ -2847,6 +2847,7 @@ namespace PakViewer
             using var dialog = new OpenFileDialog
             {
                 Title = "Open Lineage M Icon/Image DAT File",
+                MultiSelect = true,
                 Filters = { new FileFilter("DAT Files", ".dat"), new FileFilter("All Files", ".*") }
             };
 
@@ -2857,13 +2858,17 @@ namespace PakViewer
 
             if (dialog.ShowDialog(this) == DialogResult.Ok)
             {
-                OpenDatInNewTab(dialog.FileName);
+                var paths = dialog.Filenames.ToArray();
+                if (paths.Length > 0)
+                    OpenDatInNewTab(paths);
             }
         }
 
-        private void OpenDatInNewTab(string datPath)
+        private void OpenDatInNewTab(string[] datPaths)
         {
-            var tabKey = $"dat:{datPath}";
+            var tabKey = datPaths.Length == 1
+                ? $"dat:{datPaths[0]}"
+                : $"dat:{string.Join("|", datPaths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))}";
 
             if (_openTabs.ContainsKey(tabKey))
             {
@@ -2873,8 +2878,10 @@ namespace PakViewer
 
             try
             {
-                var provider = new DatProvider(datPath);
-                var datName = Path.GetFileName(datPath);
+                var provider = new DatProvider(datPaths);
+                var datName = datPaths.Length == 1
+                    ? Path.GetFileName(datPaths[0])
+                    : $"Icon/Image DAT ({provider.SourceCount} files)";
 
                 // Create browser content using shared provider browser
                 var browserContent = CreateProviderBrowserContent(provider);
@@ -2890,10 +2897,10 @@ namespace PakViewer
                 _mainTabControl.Pages.Add(docPage);
                 _mainTabControl.SelectedPage = docPage;
 
-                _settings.LastFolder = Path.GetDirectoryName(datPath);
+                _settings.LastFolder = Path.GetDirectoryName(datPaths[0]);
                 _settings.Save();
 
-                _statusLabel.Text = $"Opened DAT: {datName} ({provider.Count} files)";
+                _statusLabel.Text = $"Opened DAT: {datName} ({provider.TotalCount} resources)";
             }
             catch (Exception ex)
             {
@@ -2991,7 +2998,11 @@ namespace PakViewer
             {
                 Title = I18n.T("Menu.File.OpenMDat"),
                 MultiSelect = true,
-                Filters = { new FileFilter("DAT Files", ".dat"), new FileFilter("All Files", ".*") }
+                Filters =
+                {
+                    new FileFilter("M DAT Containers / Icon/Image DAT Resources", ".dat"),
+                    new FileFilter("All Files", ".*")
+                }
             };
 
             if (!string.IsNullOrEmpty(_settings.LastFolder) && Directory.Exists(_settings.LastFolder))
@@ -3025,7 +3036,7 @@ namespace PakViewer
 
                 var tabName = datPaths.Length == 1
                     ? Path.GetFileName(datPaths[0])
-                    : $"MDat ({datPaths.Length} files)";
+                    : $"MDat ({provider.SourceCount} files)";
 
                 var browserContent = CreateProviderBrowserContent(provider);
 
@@ -3043,7 +3054,8 @@ namespace PakViewer
                 _settings.LastFolder = Path.GetDirectoryName(datPaths[0]);
                 _settings.Save();
 
-                _statusLabel.Text = $"Opened MDat: {tabName} ({provider.Count} files)";
+                _statusLabel.Text = $"Opened MDat: {tabName} ({provider.TotalCount} resources; " +
+                    $"{provider.ContainerCount} containers, {provider.ResourceDatCount} Icon/Image DATs)";
             }
             catch (Exception ex)
             {

@@ -2,61 +2,118 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using PakViewer.Localization;
 using PakViewer.Utility;
 
 namespace PakViewer.Providers
 {
     /// <summary>
-    /// DAT 檔案提供者 - Lineage M DAT 格式
+    /// DAT 檔案提供者 - Lineage M Icon/Image DAT 格式，支援單一或多個來源
     /// </summary>
     public class DatProvider : IFileProvider
     {
-        private readonly DatTools.DatFile _dat;
-        private readonly List<FileEntry> _files;
+        public static string AllSourcesOption => I18n.T("Filter.All");
+
+        private readonly Dictionary<string, DatTools.DatFile> _datFiles;
+        private readonly List<FileEntry> _allFiles;
+        private List<FileEntry> _filteredFiles;
+        private string _currentSourceOption;
         private bool _disposed;
 
         public DatProvider(string datPath)
+            : this(new[] { datPath })
         {
-            if (!File.Exists(datPath))
-                throw new FileNotFoundException("DAT file not found", datPath);
+        }
 
-            if (!DatTools.IsDatFile(datPath))
-                throw new InvalidDataException("Not a valid DAT file");
+        public DatProvider(string[] datPaths)
+        {
+            if (datPaths == null || datPaths.Length == 0)
+                throw new ArgumentException("At least one DAT path is required", nameof(datPaths));
 
-            _dat = new DatTools.DatFile(datPath);
-            _dat.ParseEntries();
+            _datFiles = new Dictionary<string, DatTools.DatFile>(StringComparer.OrdinalIgnoreCase);
+            _allFiles = new List<FileEntry>();
 
-            _files = _dat.Entries.Select((e, i) => new FileEntry
+            int globalIndex = 0;
+            foreach (var datPath in datPaths
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
             {
-                Index = i,
-                FileName = Path.GetFileName(e.Path),
-                FileSize = e.Size,
-                Offset = e.Offset,
-                FilePath = e.Path,  // DAT 內的完整路徑
-                SourceName = Path.GetFileName(datPath),
-                Source = this
-            }).ToList();
+                if (!File.Exists(datPath) || !DatTools.IsDatFile(datPath))
+                    continue;
+
+                try
+                {
+                    var dat = new DatTools.DatFile(datPath);
+                    dat.ParseEntries();
+
+                    var sourceName = GetUniqueSourceName(datPath);
+                    _datFiles[sourceName] = dat;
+
+                    foreach (var entry in dat.Entries)
+                    {
+                        _allFiles.Add(new FileEntry
+                        {
+                            Index = globalIndex++,
+                            FileName = entry.Path,
+                            FileSize = entry.Size,
+                            Offset = entry.Offset,
+                            FilePath = entry.Path,
+                            SourceName = sourceName,
+                            Source = this
+                        });
+                    }
+                }
+                catch
+                {
+                    // 其他有效 DAT 仍可繼續載入；全部失敗時會在下方回報。
+                }
+            }
+
+            if (_datFiles.Count == 0)
+                throw new InvalidDataException("No valid Lineage M Icon/Image DAT files could be opened");
+
+            // 多檔時先顯示第一個來源，避免一次建立過大的 UI 清單；仍可切換到「全部」。
+            SetSourceOption(_datFiles.Keys.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).First());
+        }
+
+        private string GetUniqueSourceName(string datPath)
+        {
+            var baseName = Path.GetFileName(datPath);
+            var sourceName = baseName;
+            int suffix = 2;
+
+            while (_datFiles.ContainsKey(sourceName))
+                sourceName = $"{baseName} ({suffix++})";
+
+            return sourceName;
         }
 
         /// <summary>
-        /// 取得內部 DatFile 實例 (用於進階操作)
+        /// 單一來源時取得內部 DatFile 實例 (用於既有進階操作)
         /// </summary>
-        public DatTools.DatFile DatFile => _dat;
+        public DatTools.DatFile DatFile => _datFiles.Count == 1 ? _datFiles.Values.First() : null;
 
-        public string Name => _dat.FileName;
+        public int SourceCount => _datFiles.Count;
 
-        public int Count => _files.Count;
+        public int TotalCount => _allFiles.Count;
 
-        public IReadOnlyList<FileEntry> Files => _files.AsReadOnly();
+        public string Name => _datFiles.Count == 1
+            ? _datFiles.Keys.First()
+            : $"DAT ({_datFiles.Count} files)";
+
+        public int Count => _filteredFiles?.Count ?? _allFiles.Count;
+
+        public IReadOnlyList<FileEntry> Files => (_filteredFiles ?? _allFiles).AsReadOnly();
 
         public byte[] Extract(int index)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(DatProvider));
-            if (index < 0 || index >= _files.Count)
+            var files = _filteredFiles ?? _allFiles;
+            if (index < 0 || index >= files.Count)
                 throw new ArgumentOutOfRangeException(nameof(index));
 
-            var entry = _dat.Entries[index];
-            return _dat.ExtractFile(entry);
+            return Extract(files[index]);
         }
 
         public byte[] Extract(FileEntry entry)
@@ -65,34 +122,73 @@ namespace PakViewer.Providers
             if (entry == null)
                 throw new ArgumentNullException(nameof(entry));
 
-            var datEntry = _dat.Entries.FirstOrDefault(e =>
+            if (!_datFiles.TryGetValue(entry.SourceName, out var dat))
+                throw new InvalidOperationException($"DAT file not found: {entry.SourceName}");
+
+            var datEntry = dat.Entries.FirstOrDefault(e =>
                 e.Path == entry.FilePath && e.Offset == entry.Offset);
 
             if (datEntry == null)
                 throw new InvalidOperationException($"File not found in DAT: {entry.FileName}");
 
-            return _dat.ExtractFile(datEntry);
+            return dat.ExtractFile(datEntry);
         }
 
         public IEnumerable<string> GetExtensions()
         {
-            return _files
+            return (_filteredFiles ?? _allFiles)
                 .Select(f => Path.GetExtension(f.FileName)?.ToLowerInvariant() ?? "")
                 .Where(ext => !string.IsNullOrEmpty(ext))
                 .Distinct()
                 .OrderBy(ext => ext);
         }
 
-        // Source options - DAT 模式只有一個選項
-        public IEnumerable<string> GetSourceOptions() => new[] { Name };
-        public void SetSourceOption(string option) { /* 不需要處理 */ }
-        public string CurrentSourceOption => Name;
-        public bool HasMultipleSourceOptions => false;
+        public IEnumerable<string> GetSourceOptions()
+        {
+            if (_datFiles.Count > 1)
+                yield return AllSourcesOption;
+
+            foreach (var name in _datFiles.Keys.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
+                yield return name;
+        }
+
+        public void SetSourceOption(string option)
+        {
+            _currentSourceOption = option;
+
+            if (option == AllSourcesOption || string.IsNullOrEmpty(option))
+            {
+                _filteredFiles = null;
+                return;
+            }
+
+            _filteredFiles = _allFiles
+                .Where(file => file.SourceName.Equals(option, StringComparison.OrdinalIgnoreCase))
+                .Select((file, index) => new FileEntry
+                {
+                    Index = index,
+                    FileName = file.FileName,
+                    FileSize = file.FileSize,
+                    Offset = file.Offset,
+                    FilePath = file.FilePath,
+                    SourceName = file.SourceName,
+                    Source = this
+                })
+                .ToList();
+        }
+
+        public string CurrentSourceOption => _currentSourceOption ?? AllSourcesOption;
+
+        public bool HasMultipleSourceOptions => _datFiles.Count > 1;
 
         public void Dispose()
         {
-            // DatFile 沒有需要釋放的資源
-            _disposed = true;
+            if (!_disposed)
+            {
+                // DatFile 每次提取時才短暫開啟 stream，沒有持有中的資源。
+                _datFiles.Clear();
+                _disposed = true;
+            }
         }
     }
 }

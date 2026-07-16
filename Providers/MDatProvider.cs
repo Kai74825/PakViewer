@@ -4,17 +4,19 @@ using System.IO;
 using System.Linq;
 using Lin.Helper.Core.Dat;
 using PakViewer.Localization;
+using ResourceDatTools = PakViewer.Utility.DatTools;
 
 namespace PakViewer.Providers
 {
     /// <summary>
-    /// ZIP-based .dat 容器提供者 - 支援單一或多個 .dat 檔案
+    /// M DAT 提供者 - 支援 ZIP-based 容器及 Lineage M Icon/Image 資源 DAT
     /// </summary>
     public class MDatProvider : IFileProvider
     {
         public static string AllSourcesOption => I18n.T("Filter.All");
 
-        private readonly Dictionary<string, MDat> _datFiles;  // dat filename -> MDat
+        private readonly Dictionary<string, MDat> _containerFiles;
+        private readonly Dictionary<string, ResourceDatTools.DatFile> _resourceFiles;
         private readonly List<FileEntry> _allFiles;
         private List<FileEntry> _filteredFiles;
         private string _currentSourceOption;
@@ -23,43 +25,68 @@ namespace PakViewer.Providers
         /// <summary>
         /// 建立 MDat 提供者
         /// </summary>
-        /// <param name="datPaths">.dat 檔案路徑 (一或多個)</param>
+        /// <param name="datPaths">M DAT 容器及 Icon/Image 資源 .dat 路徑 (一或多個)</param>
         /// <param name="password">ZIP 密碼 (null 表示無密碼)</param>
         public MDatProvider(string[] datPaths, string password = null)
         {
             if (datPaths == null || datPaths.Length == 0)
                 throw new ArgumentException("At least one DAT path is required", nameof(datPaths));
 
-            _datFiles = new Dictionary<string, MDat>(StringComparer.OrdinalIgnoreCase);
+            _containerFiles = new Dictionary<string, MDat>(StringComparer.OrdinalIgnoreCase);
+            _resourceFiles = new Dictionary<string, ResourceDatTools.DatFile>(StringComparer.OrdinalIgnoreCase);
             _allFiles = new List<FileEntry>();
 
             int globalIndex = 0;
-            foreach (var datPath in datPaths.OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
+            foreach (var datPath in datPaths
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
             {
-                var datName = Path.GetFileName(datPath);
+                if (!File.Exists(datPath))
+                    continue;
+
                 try
                 {
-                    var dat = new MDat(datPath, password);
+                    var status = MDat.DetectStatus(datPath);
+                    var sourceName = GetUniqueSourceName(datPath);
 
-                    // 跳過 Sealed 狀態
-                    if (dat.Status == MDatStatus.Sealed)
+                    if (status != MDatStatus.Sealed)
                     {
-                        dat.Dispose();
-                        continue;
-                    }
+                        var dat = new MDat(datPath, password);
+                        _containerFiles[sourceName] = dat;
 
-                    _datFiles[datName] = dat;
-
-                    foreach (var entry in dat.Entries)
-                    {
-                        _allFiles.Add(new FileEntry
+                        foreach (var entry in dat.Entries)
                         {
-                            Index = globalIndex++,
-                            FileName = entry.FileName,
-                            FileSize = entry.UncompressedSize,
-                            SourceName = datName,
-                            Source = this
-                        });
+                            _allFiles.Add(new FileEntry
+                            {
+                                Index = globalIndex++,
+                                FileName = entry.FileName,
+                                FileSize = entry.UncompressedSize,
+                                FilePath = entry.FileName,
+                                SourceName = sourceName,
+                                Source = this
+                            });
+                        }
+                    }
+                    else if (ResourceDatTools.IsDatFile(datPath))
+                    {
+                        var dat = new ResourceDatTools.DatFile(datPath);
+                        dat.ParseEntries();
+                        _resourceFiles[sourceName] = dat;
+
+                        foreach (var entry in dat.Entries)
+                        {
+                            _allFiles.Add(new FileEntry
+                            {
+                                Index = globalIndex++,
+                                FileName = entry.Path,
+                                FileSize = entry.Size,
+                                Offset = entry.Offset,
+                                FilePath = entry.Path,
+                                SourceName = sourceName,
+                                Source = this
+                            });
+                        }
                     }
                 }
                 catch
@@ -68,18 +95,46 @@ namespace PakViewer.Providers
                 }
             }
 
+            if (SourceCount == 0)
+                throw new InvalidDataException("No supported M DAT containers or Icon/Image DAT resources could be opened");
+
             // 預設選第一個 dat
-            var defaultOption = _datFiles.Keys.FirstOrDefault() ?? AllSourcesOption;
+            var defaultOption = GetSourceNames().OrderBy(name => name, StringComparer.OrdinalIgnoreCase).First();
             SetSourceOption(defaultOption);
         }
+
+        private string GetUniqueSourceName(string datPath)
+        {
+            var baseName = Path.GetFileName(datPath);
+            var sourceName = baseName;
+            int suffix = 2;
+
+            while (_containerFiles.ContainsKey(sourceName) || _resourceFiles.ContainsKey(sourceName))
+                sourceName = $"{baseName} ({suffix++})";
+
+            return sourceName;
+        }
+
+        private IEnumerable<string> GetSourceNames()
+        {
+            return _containerFiles.Keys.Concat(_resourceFiles.Keys);
+        }
+
+        public int ContainerCount => _containerFiles.Count;
+
+        public int ResourceDatCount => _resourceFiles.Count;
+
+        public int SourceCount => ContainerCount + ResourceDatCount;
+
+        public int TotalCount => _allFiles.Count;
 
         public string Name
         {
             get
             {
-                if (_datFiles.Count == 1)
-                    return _datFiles.Keys.First();
-                return $"MDat ({_datFiles.Count} files)";
+                if (SourceCount == 1)
+                    return GetSourceNames().First();
+                return $"MDat ({SourceCount} files)";
             }
         }
 
@@ -100,14 +155,27 @@ namespace PakViewer.Providers
             if (entry == null)
                 throw new ArgumentNullException(nameof(entry));
 
-            if (!_datFiles.TryGetValue(entry.SourceName, out var dat))
-                throw new InvalidOperationException($"DAT file not found: {entry.SourceName}");
+            if (_containerFiles.TryGetValue(entry.SourceName, out var container))
+            {
+                var containerEntry = container.Entries.FirstOrDefault(e =>
+                    e.FileName.Equals(entry.FilePath ?? entry.FileName, StringComparison.Ordinal));
+                if (containerEntry == null)
+                    throw new InvalidOperationException($"Entry not found in DAT: {entry.FileName}");
 
-            var datEntry = dat.Entries.FirstOrDefault(e => e.FileName == entry.FileName);
-            if (datEntry == null)
-                throw new InvalidOperationException($"Entry not found in DAT: {entry.FileName}");
+                return container.Extract(containerEntry);
+            }
 
-            return dat.Extract(datEntry);
+            if (_resourceFiles.TryGetValue(entry.SourceName, out var resource))
+            {
+                var resourceEntry = resource.Entries.FirstOrDefault(e =>
+                    e.Path == entry.FilePath && e.Offset == entry.Offset);
+                if (resourceEntry == null)
+                    throw new InvalidOperationException($"Entry not found in DAT: {entry.FileName}");
+
+                return resource.ExtractFile(resourceEntry);
+            }
+
+            throw new InvalidOperationException($"DAT file not found: {entry.SourceName}");
         }
 
         public IEnumerable<string> GetExtensions()
@@ -122,10 +190,10 @@ namespace PakViewer.Providers
 
         public IEnumerable<string> GetSourceOptions()
         {
-            if (_datFiles.Count > 1)
+            if (SourceCount > 1)
                 yield return AllSourcesOption;
 
-            foreach (var name in _datFiles.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
+            foreach (var name in GetSourceNames().OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
                 yield return name;
         }
 
@@ -146,6 +214,8 @@ namespace PakViewer.Providers
                         Index = i,
                         FileName = f.FileName,
                         FileSize = f.FileSize,
+                        Offset = f.Offset,
+                        FilePath = f.FilePath,
                         SourceName = f.SourceName,
                         Source = f.Source
                     })
@@ -155,17 +225,18 @@ namespace PakViewer.Providers
 
         public string CurrentSourceOption => _currentSourceOption ?? AllSourcesOption;
 
-        public bool HasMultipleSourceOptions => _datFiles.Count > 1;
+        public bool HasMultipleSourceOptions => SourceCount > 1;
 
         public void Dispose()
         {
             if (!_disposed)
             {
-                foreach (var dat in _datFiles.Values)
+                foreach (var dat in _containerFiles.Values)
                 {
                     dat?.Dispose();
                 }
-                _datFiles.Clear();
+                _containerFiles.Clear();
+                _resourceFiles.Clear();
                 _disposed = true;
             }
         }
